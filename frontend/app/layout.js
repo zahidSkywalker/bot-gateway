@@ -1,17 +1,15 @@
-import { Html, Head, Main, NextScript } from 'next/document';
+export const metadata = {
+  title: 'Bot Gateway — Control Panel',
+  description: 'Token-based Bot Gateway Dashboard',
+};
 
-export default function Document() {
+export default function RootLayout({ children }) {
   return (
-    <Html lang="en">
-      <Head>
-        <title>Bot Gateway — Control Panel</title>
-        <meta name="description" content="Token-based Bot Gateway Dashboard" />
+    <html lang="en">
+      <head>
         <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>" />
-      </Head>
-      <body>
-        <Main />
-        <NextScript />
-      </body>
-    </Html>
+      </head>
+      <body>{children}</body>
+    </html>
   );
 }

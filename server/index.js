@@ -17,6 +17,7 @@ const tokensRoutes = require('./routes/tokens');
 const botsRoutes = require('./routes/bots');
 const channelsRoutes = require('./routes/channels');
 const messagesRoutes = require('./routes/messages');
+const auditRoutes = require('./routes/audit');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -39,6 +40,7 @@ app.use('/api/v1/tokens', tokensRoutes);
 app.use('/api/v1/bots', botsRoutes);
 app.use('/api/v1/channels', channelsRoutes);
 app.use('/api/v1/messages', messagesRoutes);
+app.use('/api/v1/audit', auditRoutes);
 
 // Stats endpoint (admin)
 app.get('/api/v1/stats', async (req, res) => {

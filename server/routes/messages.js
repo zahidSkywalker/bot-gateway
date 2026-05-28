@@ -71,7 +71,6 @@ router.post('/', tokenAuth, messageLimiter, async (req, res) => {
     
     // Update bot message count
     if (bot) {
-      await supa.rpc('', {}).catch(() => {}); // ignore
       await supa
         .from('bots')
         .update({ message_count: (bot.message_count || 0) + 1 })

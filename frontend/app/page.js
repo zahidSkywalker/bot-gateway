@@ -518,13 +518,9 @@ function AuditPage() {
   useEffect(() => {
     async function load() {
       try {
-        const supaUrl = 'https://iprzxslxipmkivhxupce.supabase.co';
-        const supaKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlwcnp4c2x4aXBta2l2aHh1cGNlIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3OTQ1NDY3MywiZXhwIjoyMDk1MDMwNjczfQ.uQ43loTJ1oQhKqty735v-v0HehGehc0_CoMHxTcozHg';
-        const res = await fetch(`${supaUrl}/rest/v1/audit_log?select=*&order=created_at.desc&limit=100`, {
-          headers: { apikey: supaKey, Authorization: `Bearer ${supaKey}` }
-        });
+        const res = await api('/audit?limit=100');
         const data = await res.json();
-        setLogs(data || []);
+        setLogs(data.logs || []);
       } catch (err) { console.error(err); }
       setLoading(false);
     }
