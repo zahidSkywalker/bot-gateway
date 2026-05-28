@@ -1,46 +1,43 @@
 // ============================================
 // Bot Gateway — Database Setup
 // Auto-creates tables on first boot
+// Gracefully handles missing Supabase config
 // ============================================
 const { createClient } = require('@supabase/supabase-js');
 
 let supabase;
+let dbAvailable = false;
 
 function getSupabase() {
   if (!supabase) {
     const url = process.env.SUPABASE_URL;
     const key = process.env.SUPABASE_SERVICE_KEY;
-    if (!url || !key) throw new Error('Missing SUPABASE_URL or SUPABASE_SERVICE_KEY');
+    if (!url || !key) {
+      console.warn('[DB] SUPABASE_URL or SUPABASE_SERVICE_KEY not set. Database features disabled.');
+      return null;
+    }
     supabase = createClient(url, key);
   }
   return supabase;
 }
 
-// Execute raw SQL via the RPC endpoint workaround
-// Since REST API can't run DDL, we use the pg endpoint
-async function runSQL(sql) {
-  const supa = getSupabase();
-  // Use fetch to hit the Supabase SQL API
-  const url = `${process.env.SUPABASE_URL}/rest/v1/rpc/exec_sql`;
-  
-  // Try direct approach - create a temporary RPC function
-  // Alternative: we'll create tables using the management API pattern
-  const response = await fetch(`${process.env.SUPABASE_URL}/rest/v1/`, {
-    method: 'POST',
-    headers: {
-      'apikey': process.env.SUPABASE_SERVICE_KEY,
-      'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_KEY}`,
-      'Content-Type': 'application/json',
-      'Prefer': 'return=minimal'
-    }
-  });
-  
-  return response;
+// Check if database is configured
+function isDbAvailable() {
+  return dbAvailable;
 }
 
 // Initialize database tables
 async function initDatabase() {
   const supa = getSupabase();
+  
+  if (!supa) {
+    console.warn('[DB] Supabase not configured. Running in limited mode (no database).');
+    console.warn('[DB] Set SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables.');
+    console.warn('[DB] Then run supabase/schema.sql in your Supabase SQL Editor.');
+    dbAvailable = false;
+    return false;
+  }
+  
   console.log('[DB] Checking database tables...');
 
   // Check if tables exist by trying to query them
@@ -56,6 +53,7 @@ async function initDatabase() {
 
   if (existing.length === tables.length) {
     console.log(`[DB] All ${tables.length} tables exist. Database ready.`);
+    dbAvailable = true;
     
     // Ensure default channel exists
     const { data: channels } = await supa.from('channels').select('id').eq('name', 'general').limit(1);
@@ -71,7 +69,8 @@ async function initDatabase() {
   console.log('[DB] Go to: https://supabase.com/dashboard → SQL Editor → paste schema.sql → Run');
   
   // Still return true so server starts — we'll handle missing tables gracefully
+  dbAvailable = false;
   return false;
 }
 
-module.exports = { getSupabase, initDatabase };
+module.exports = { getSupabase, initDatabase, isDbAvailable };
