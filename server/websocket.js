@@ -5,7 +5,11 @@
 const { WebSocketServer } = require('ws');
 const { validateToken, hasPermission } = require('./middleware/auth');
 const { wsRateCheck, wsRemoveRateLimit } = require('./middleware/rateLimit');
-const { getSupabase } = require('./database');
+const Bot = require('./models/Bot');
+const Channel = require('./models/Channel');
+const Message = require('./models/Message');
+const AuditLog = require('./models/AuditLog');
+const mongoose = require('mongoose');
 
 let wss = null;
 const connections = new Map(); // socketId -> { ws, tokenId, botName, channels }
@@ -17,11 +21,11 @@ function getWebSocketManager() {
 const wsm = {
   init(server) {
     wss = new WebSocketServer({ server, path: '/gateway' });
-    
+
     console.log('[WS] WebSocket server initialized on /gateway');
-    
+
     wss.on('connection', handleConnection);
-    
+
     // Heartbeat: ping all clients every 30s
     setInterval(() => {
       wss.clients.forEach(ws => {
@@ -31,10 +35,10 @@ const wsm = {
       });
     }, 30000);
   },
-  
+
   broadcastToChannel(channelId, message) {
     if (!wss) return;
-    
+
     const msgStr = JSON.stringify(message);
     wss.clients.forEach(ws => {
       const conn = connections.get(ws.id);
@@ -43,7 +47,7 @@ const wsm = {
       }
     });
   },
-  
+
   disconnectByTokenId(tokenId) {
     if (!wss) return;
     wss.clients.forEach(ws => {
@@ -54,7 +58,7 @@ const wsm = {
       }
     });
   },
-  
+
   getStats() {
     return {
       totalConnections: wss?.clients?.size || 0,
@@ -72,24 +76,24 @@ const wsm = {
 async function handleConnection(ws, req) {
   const socketId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   ws.id = socketId;
-  
+
   // Authenticate via token query param
   const url = new URL(req.url, 'http://localhost');
   const token = url.searchParams.get('token');
-  
+
   if (!token) {
     ws.send(JSON.stringify({ type: 'error', message: 'Missing token. Connect with ?token=YOUR_TOKEN' }));
     ws.close(4001, 'Missing token');
     return;
   }
-  
+
   const tokenData = await validateToken(token);
   if (!tokenData) {
     ws.send(JSON.stringify({ type: 'error', message: 'Invalid or expired token' }));
     ws.close(4001, 'Invalid token');
     return;
   }
-  
+
   // Initialize connection record
   connections.set(socketId, {
     ws,
@@ -98,54 +102,44 @@ async function handleConnection(ws, req) {
     channels: new Set(), // subscribed channels
     connectedAt: new Date().toISOString()
   });
-  
-  const supa = getSupabase();
-  
+
   // Get or create bot record
-  const { data: bot } = await supa
-    .from('bots')
-    .select('id, name')
-    .eq('token_id', tokenData.id)
-    .single();
-  
+  const tokenId = new mongoose.Types.ObjectId(tokenData.id);
+  const bot = await Bot.findOne({ token_id: tokenId }).lean();
+
   if (bot) {
     connections.get(socketId).botName = bot.name;
-    await supa.from('bots').update({
+    await Bot.findByIdAndUpdate(bot._id, {
       status: 'online',
-      connected_at: new Date().toISOString(),
-      last_seen_at: new Date().toISOString()
-    }).eq('id', bot.id);
+      connected_at: new Date(),
+      last_seen_at: new Date()
+    });
   }
-  
+
   // Subscribe to 'general' by default
-  const { data: generalCh } = await supa
-    .from('channels')
-    .select('id')
-    .eq('name', 'general')
-    .eq('is_active', true)
-    .single();
-  
+  const generalCh = await Channel.findOne({ name: 'general', is_active: true }).lean();
+
   if (generalCh) {
-    connections.get(socketId).channels.add(generalCh.id);
+    connections.get(socketId).channels.add(generalCh.id.toString());
   }
-  
+
   ws.send(JSON.stringify({
     type: 'connected',
     message: `Connected as ${bot?.name || 'unknown'}`,
     socketId,
-    defaultChannel: generalCh?.id || null
+    defaultChannel: generalCh?.id?.toString() || null
   }));
-  
+
   console.log(`[WS] Bot connected: ${bot?.name || 'unknown'} (${socketId})`);
-  
+
   // Audit log
-  await supa.from('audit_log').insert({
+  await new AuditLog({
     action: 'bot.connected',
     actor: bot?.name || 'unknown',
     actor_type: 'bot',
     detail: { socket_id: socketId, token_prefix: tokenData.key_prefix }
-  }).catch(() => {});
-  
+  }).save().catch(() => {});
+
   // Handle messages
   ws.on('message', async (raw) => {
     // Rate check
@@ -153,7 +147,7 @@ async function handleConnection(ws, req) {
       ws.send(JSON.stringify({ type: 'error', message: 'Rate limit exceeded' }));
       return;
     }
-    
+
     let msg;
     try {
       msg = JSON.parse(raw);
@@ -161,7 +155,7 @@ async function handleConnection(ws, req) {
       ws.send(JSON.stringify({ type: 'error', message: 'Invalid JSON' }));
       return;
     }
-    
+
     switch (msg.type) {
       case 'message': {
         // Bot sending a message to a channel
@@ -169,53 +163,49 @@ async function handleConnection(ws, req) {
           ws.send(JSON.stringify({ type: 'error', message: 'Write permission required' }));
           return;
         }
-        
-        const channelId = msg.channel || generalCh?.id;
+
+        const channelId = msg.channel || generalCh?.id?.toString();
         if (!channelId) {
           ws.send(JSON.stringify({ type: 'error', message: 'No channel specified' }));
           return;
         }
-        
+
         const botName = connections.get(socketId)?.botName || 'unknown';
-        
+
         // Store message
-        const { data, error } = await supa.from('messages').insert({
+        const message = new Message({
           channel_id: channelId,
-          bot_id: bot?.id,
+          bot_id: bot?._id?.toString(),
           bot_name: botName,
           content: msg.content,
           content_type: msg.content_type || 'text',
           source: 'websocket'
-        }).select().single();
-        
-        if (error) {
-          ws.send(JSON.stringify({ type: 'error', message: 'Failed to send message' }));
-          return;
-        }
-        
+        });
+        const saved = await message.save();
+
         // Broadcast to all subscribers of this channel
         wsm.broadcastToChannel(channelId, {
           type: 'message',
-          id: data.id,
+          id: saved.id,
           channel_id: channelId,
           bot_name: botName,
           content: msg.content,
           content_type: msg.content_type || 'text',
           source: 'websocket',
-          created_at: data.created_at
+          created_at: saved.created_at
         });
-        
+
         // Update bot message count
         if (bot) {
-          await supa.from('bots').update({
-            message_count: (bot.message_count || 0) + 1,
-            last_seen_at: new Date().toISOString()
-          }).eq('id', bot.id);
+          await Bot.findByIdAndUpdate(bot._id, {
+            $inc: { message_count: 1 },
+            last_seen_at: new Date()
+          });
         }
-        
+
         break;
       }
-      
+
       case 'subscribe': {
         // Subscribe to a channel
         const channelId = msg.channel;
@@ -225,7 +215,7 @@ async function handleConnection(ws, req) {
         }
         break;
       }
-      
+
       case 'unsubscribe': {
         const channelId = msg.channel;
         if (channelId) {
@@ -234,40 +224,40 @@ async function handleConnection(ws, req) {
         }
         break;
       }
-      
+
       case 'pong':
         // Heartbeat response
         break;
-      
+
       default:
         ws.send(JSON.stringify({ type: 'error', message: `Unknown message type: ${msg.type}` }));
     }
   });
-  
+
   ws.on('close', async () => {
     const conn = connections.get(socketId);
     if (conn) {
       console.log(`[WS] Bot disconnected: ${conn.botName} (${socketId})`);
-      
+
       if (bot) {
-        await supa.from('bots').update({
+        await Bot.findByIdAndUpdate(bot._id, {
           status: 'offline',
-          last_seen_at: new Date().toISOString()
-        }).eq('id', bot.id).catch(() => {});
+          last_seen_at: new Date()
+        }).catch(() => {});
       }
-      
-      await supa.from('audit_log').insert({
+
+      await new AuditLog({
         action: 'bot.disconnected',
         actor: conn.botName,
         actor_type: 'bot',
         detail: { socket_id: socketId }
-      }).catch(() => {});
-      
+      }).save().catch(() => {});
+
       connections.delete(socketId);
       wsRemoveRateLimit(socketId);
     }
   });
-  
+
   ws.on('error', (err) => {
     console.error(`[WS] Error (${socketId}):`, err.message);
   });

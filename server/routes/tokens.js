@@ -5,9 +5,10 @@
 // DELETE /api/v1/tokens/:id       — Revoke token (admin)
 // ============================================
 const express = require('express');
-const { getSupabase } = require('../database');
-const { generateTokenKey, hashToken, getTokenPrefix } = require('../middleware/auth');
-const { adminAuth } = require('../middleware/auth');
+const { generateTokenKey, hashToken, getTokenPrefix, adminAuth } = require('../middleware/auth');
+const Token = require('../models/Token');
+const AuditLog = require('../models/AuditLog');
+const { cleanLean } = require('../models');
 
 const router = express.Router();
 
@@ -15,15 +16,15 @@ const router = express.Router();
 router.post('/generate', adminAuth, async (req, res) => {
   try {
     const { name, permissions = {}, expires_in_days } = req.body;
-    
+
     if (!name) {
       return res.status(400).json({ error: 'Token name is required' });
     }
-    
+
     const tokenKey = generateTokenKey();
     const keyHash = hashToken(tokenKey);
     const prefix = getTokenPrefix(tokenKey);
-    
+
     const tokenData = {
       name,
       key_hash: keyHash,
@@ -36,39 +37,35 @@ router.post('/generate', adminAuth, async (req, res) => {
       created_by: req.isAdmin ? 'admin' : 'system',
       is_active: true
     };
-    
+
     if (expires_in_days) {
-      tokenData.expires_at = new Date(Date.now() + expires_in_days * 86400000).toISOString();
+      tokenData.expires_at = new Date(Date.now() + expires_in_days * 86400000);
     }
-    
-    const supa = getSupabase();
-    const { data, error } = await supa.from('tokens').insert(tokenData).select().single();
-    
-    if (error) {
-      return res.status(500).json({ error: 'Failed to create token', detail: error.message });
-    }
-    
+
+    const newToken = new Token(tokenData);
+    const saved = await newToken.save();
+
     // Log to audit
-    await supa.from('audit_log').insert({
+    await new AuditLog({
       action: 'token.created',
       actor: 'admin',
-      detail: { token_id: data.id, token_name: name, prefix }
-    });
-    
+      detail: { token_id: saved.id, token_name: name, prefix }
+    }).save();
+
     // Return the plain token ONLY on creation
     res.json({
       success: true,
       token: tokenKey,  // This is the ONLY time the full token is shown
       token_data: {
-        id: data.id,
-        name: data.name,
-        prefix: data.key_prefix,
-        permissions: data.permissions,
-        expires_at: data.expires_at,
-        created_at: data.created_at
+        id: saved.id,
+        name: saved.name,
+        prefix: saved.key_prefix,
+        permissions: saved.permissions,
+        expires_at: saved.expires_at,
+        created_at: saved.created_at
       }
     });
-    
+
   } catch (err) {
     console.error('[TOKENS] Generate error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -78,17 +75,12 @@ router.post('/generate', adminAuth, async (req, res) => {
 // List all tokens
 router.get('/', adminAuth, async (req, res) => {
   try {
-    const supa = getSupabase();
-    const { data, error } = await supa
-      .from('tokens')
-      .select('id, name, key_prefix, permissions, created_by, expires_at, last_used_at, is_active, created_at, updated_at')
-      .order('created_at', { ascending: false });
-    
-    if (error) {
-      return res.status(500).json({ error: 'Failed to fetch tokens', detail: error.message });
-    }
-    
-    res.json({ success: true, tokens: data });
+    const tokens = await Token.find()
+      .sort({ created_at: -1 })
+      .select('-key_hash')
+      .lean();
+
+    res.json({ success: true, tokens: cleanLean(tokens) });
   } catch (err) {
     console.error('[TOKENS] List error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -98,29 +90,26 @@ router.get('/', adminAuth, async (req, res) => {
 // Revoke a token
 router.delete('/:id', adminAuth, async (req, res) => {
   try {
-    const supa = getSupabase();
-    
-    // Get token info before deleting
-    const { data: token } = await supa.from('tokens').select('name, key_prefix').eq('id', req.params.id).single();
-    
-    const { error } = await supa.from('tokens').update({ is_active: false }).eq('id', req.params.id);
-    
-    if (error) {
-      return res.status(404).json({ error: 'Token not found', detail: error.message });
+    // Get token info before revoking
+    const token = await Token.findById(req.params.id).select('name key_prefix');
+    if (!token) {
+      return res.status(404).json({ error: 'Token not found' });
     }
-    
-    // Log
-    await supa.from('audit_log').insert({
+
+    await Token.findByIdAndUpdate(req.params.id, { is_active: false });
+
+    // Audit
+    await new AuditLog({
       action: 'token.revoked',
       actor: 'admin',
-      detail: { token_id: req.params.id, token_name: token?.name, prefix: token?.key_prefix }
-    });
-    
+      detail: { token_id: req.params.id, token_name: token.name, prefix: token.key_prefix }
+    }).save();
+
     // Notify connected bot using this token to disconnect
     const { getWebSocketManager } = require('../websocket');
     const wsm = getWebSocketManager();
     if (wsm) wsm.disconnectByTokenId(req.params.id);
-    
+
     res.json({ success: true, message: 'Token revoked' });
   } catch (err) {
     console.error('[TOKENS] Revoke error:', err);

@@ -3,8 +3,9 @@
 // GET /api/v1/audit  — List audit events (admin)
 // ============================================
 const express = require('express');
-const { getSupabase } = require('../database');
 const { adminAuth } = require('../middleware/auth');
+const AuditLog = require('../models/AuditLog');
+const { cleanLean } = require('../models');
 
 const router = express.Router();
 
@@ -14,22 +15,19 @@ router.get('/', adminAuth, async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit) || 100, 500);
     const offset = parseInt(req.query.offset) || 0;
 
-    const supa = getSupabase();
-
-    const { data, error, count } = await supa
-      .from('audit_log')
-      .select('*', { count: 'exact' })
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1);
-
-    if (error) {
-      return res.status(500).json({ error: 'Failed to fetch audit log', detail: error.message });
-    }
+    const [logs, total] = await Promise.all([
+      AuditLog.find()
+        .sort({ created_at: -1 })
+        .skip(offset)
+        .limit(limit)
+        .lean(),
+      AuditLog.countDocuments()
+    ]);
 
     res.json({
       success: true,
-      logs: data || [],
-      total: count || 0,
+      logs: cleanLean(logs) || [],
+      total,
       limit,
       offset
     });

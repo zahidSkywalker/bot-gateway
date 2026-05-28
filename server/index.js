@@ -48,27 +48,26 @@ app.get('/api/v1/stats', async (req, res) => {
   if (adminPass !== process.env.ADMIN_PASSWORD) {
     return res.status(401).json({ error: 'Admin access required' });
   }
-  
-  const { getSupabase } = require('./database');
-  const supa = getSupabase();
+
+  const { Token, Bot, Channel, Message, AuditLog } = require('./models');
   const wsm = getWebSocketManager();
-  
-  const [tokensRes, botsRes, channelsRes, messagesRes, auditRes] = await Promise.all([
-    supa.from('tokens').select('id', { count: 'exact', head: true }),
-    supa.from('bots').select('id', { count: 'exact', head: true }).eq('status', 'online'),
-    supa.from('channels').select('id', { count: 'exact', head: true }).eq('is_active', true),
-    supa.from('messages').select('id', { count: 'exact', head: true }),
-    supa.from('audit_log').select('id', { count: 'exact', head: true })
+
+  const [totalTokens, onlineBots, activeChannels, totalMessages, totalActions] = await Promise.all([
+    Token.countDocuments(),
+    Bot.countDocuments({ status: 'online' }),
+    Channel.countDocuments({ is_active: true }),
+    Message.countDocuments(),
+    AuditLog.countDocuments()
   ]);
-  
+
   res.json({
     success: true,
     stats: {
-      totalTokens: tokensRes.count || 0,
-      onlineBots: botsRes.count || 0,
-      activeChannels: channelsRes.count || 0,
-      totalMessages: messagesRes.count || 0,
-      totalActions: auditRes.count || 0,
+      totalTokens,
+      onlineBots,
+      activeChannels,
+      totalMessages,
+      totalActions,
       websocketConnections: wsm?.getStats()?.totalConnections || 0
     }
   });
@@ -102,15 +101,15 @@ async function start() {
   console.log('║   Token-based Bot Connection System  ║');
   console.log('╚══════════════════════════════════════╝');
   console.log('');
-  
+
   await initDatabase();
-  
+
   const server = http.createServer(app);
-  
+
   // Initialize WebSocket
   const { wsm } = require('./websocket');
   wsm.init(server);
-  
+
   server.listen(PORT, () => {
     console.log(`[SERVER] HTTP server running on port ${PORT}`);
     console.log(`[SERVER] WebSocket gateway at ws://localhost:${PORT}/gateway`);

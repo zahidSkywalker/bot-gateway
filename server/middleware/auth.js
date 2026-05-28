@@ -2,7 +2,7 @@
 // Bot Gateway — Token Auth Middleware
 // ============================================
 const crypto = require('crypto');
-const { getSupabase } = require('./database');
+const Token = require('../models/Token');
 
 // Generate a new bot token: bg_<32 random chars>
 function generateTokenKey() {
@@ -22,46 +22,41 @@ function getTokenPrefix(token) {
 // Validate a token and return its record
 async function validateToken(token) {
   if (!token || !token.startsWith('bg_')) return null;
-  
+
   const hash = hashToken(token);
-  const supa = getSupabase();
-  
-  const { data, error } = await supa
-    .from('tokens')
-    .select('*')
-    .eq('key_hash', hash)
-    .eq('is_active', true)
-    .single();
-  
-  if (error || !data) return null;
-  
+
+  const tokenDoc = await Token.findOne({ key_hash: hash, is_active: true });
+  if (!tokenDoc) return null;
+
   // Check expiry
-  if (data.expires_at && new Date(data.expires_at) < new Date()) {
+  if (tokenDoc.expires_at && new Date(tokenDoc.expires_at) < new Date()) {
     // Deactivate expired token
-    await supa.from('tokens').update({ is_active: false }).eq('id', data.id);
+    await Token.findByIdAndUpdate(tokenDoc._id, { is_active: false });
     return null;
   }
-  
+
   // Update last_used_at
-  await supa.from('tokens').update({ last_used_at: new Date().toISOString() }).eq('id', data.id);
-  
-  return data;
+  await Token.findByIdAndUpdate(tokenDoc._id, { last_used_at: new Date() });
+
+  // Return as plain object with virtuals
+  const obj = tokenDoc.toObject({ virtuals: true });
+  return obj;
 }
 
 // Express middleware for token auth
 function tokenAuth(req, res, next) {
   const authHeader = req.headers.authorization;
   const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : req.query?.token;
-  
+
   if (!token) {
     return res.status(401).json({ error: 'Missing token. Use Authorization: Bearer <token>' });
   }
-  
+
   validateToken(token).then(tokenData => {
     if (!tokenData) {
       return res.status(401).json({ error: 'Invalid or expired token' });
     }
-    
+
     req.token = tokenData;
     req.botPermissions = tokenData.permissions;
     next();
@@ -74,11 +69,11 @@ function tokenAuth(req, res, next) {
 // Admin auth middleware
 function adminAuth(req, res, next) {
   const adminPass = req.headers['x-admin-password'] || req.query?.admin_password;
-  
+
   if (adminPass !== process.env.ADMIN_PASSWORD) {
     return res.status(401).json({ error: 'Invalid admin credentials' });
   }
-  
+
   req.isAdmin = true;
   next();
 }

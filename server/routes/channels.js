@@ -5,41 +5,37 @@
 // DELETE /api/v1/channels/:id    — Delete channel (admin)
 // ============================================
 const express = require('express');
-const { getSupabase } = require('../database');
 const { tokenAuth, adminAuth } = require('../middleware/auth');
+const Channel = require('../models/Channel');
+const Message = require('../models/Message');
+const AuditLog = require('../models/AuditLog');
+const { cleanLean } = require('../models');
 
 const router = express.Router();
 
 // List channels
 router.get('/', tokenAuth, async (req, res) => {
   try {
-    const supa = getSupabase();
-    const { data, error } = await supa
-      .from('channels')
-      .select('*')
-      .eq('is_active', true)
-      .order('name');
-    
-    if (error) return res.status(500).json({ error: 'Failed to fetch channels' });
-    
-    // Get message counts per channel
-    const { data: msgCounts } = await supa
-      .from('messages')
-      .select('channel_id')
-      .order('created_at', { ascending: false });
-    
-    const channelCounts = {};
-    if (msgCounts) {
-      msgCounts.forEach(m => {
-        channelCounts[m.channel_id] = (channelCounts[m.channel_id] || 0) + 1;
-      });
-    }
-    
-    const channelsWithCounts = data.map(ch => ({
+    const channels = await Channel.find({ is_active: true })
+      .sort({ name: 1 })
+      .lean();
+
+    // Get message counts per channel using aggregate
+    const counts = await Message.aggregate([
+      { $group: { _id: '$channel_id', count: { $sum: 1 } } }
+    ]);
+
+    const countMap = {};
+    counts.forEach(c => {
+      countMap[c._id] = c.count;
+    });
+
+    const cleanedChannels = cleanLean(channels);
+    const channelsWithCounts = cleanedChannels.map(ch => ({
       ...ch,
-      message_count: channelCounts[ch.id] || 0
+      message_count: countMap[ch.id] || 0
     }));
-    
+
     res.json({ success: true, channels: channelsWithCounts });
   } catch (err) {
     res.status(500).json({ error: 'Internal server error' });
@@ -51,28 +47,31 @@ router.post('/', adminAuth, async (req, res) => {
   try {
     const { name, description } = req.body;
     if (!name) return res.status(400).json({ error: 'Channel name is required' });
-    
-    const supa = getSupabase();
-    const { data, error } = await supa
-      .from('channels')
-      .insert({ name: name.toLowerCase().replace(/\s+/g, '-'), description, created_by: 'admin' })
-      .select()
-      .single();
-    
-    if (error) {
-      if (error.code === '23505') {
+
+    const channelName = name.toLowerCase().replace(/\s+/g, '-');
+
+    try {
+      const channel = new Channel({
+        name: channelName,
+        description,
+        created_by: 'admin'
+      });
+      const saved = await channel.save();
+
+      await new AuditLog({
+        action: 'channel.created',
+        actor: 'admin',
+        detail: { channel_id: saved.id, channel_name: channelName }
+      }).save();
+
+      res.status(201).json({ success: true, channel: saved });
+    } catch (err) {
+      // Handle duplicate key error
+      if (err.code === 11000) {
         return res.status(409).json({ error: 'Channel already exists' });
       }
-      return res.status(500).json({ error: 'Failed to create channel' });
+      throw err;
     }
-    
-    await supa.from('audit_log').insert({
-      action: 'channel.created',
-      actor: 'admin',
-      detail: { channel_id: data.id, channel_name: name }
-    });
-    
-    res.status(201).json({ success: true, channel: data });
   } catch (err) {
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -81,18 +80,19 @@ router.post('/', adminAuth, async (req, res) => {
 // Delete channel
 router.delete('/:id', adminAuth, async (req, res) => {
   try {
-    const supa = getSupabase();
-    const { data: channel } = await supa.from('channels').select('name').eq('id', req.params.id).single();
-    
-    const { error } = await supa.from('channels').update({ is_active: false }).eq('id', req.params.id);
-    if (error) return res.status(404).json({ error: 'Channel not found' });
-    
-    await supa.from('audit_log').insert({
+    const channel = await Channel.findById(req.params.id).select('name');
+    if (!channel) {
+      return res.status(404).json({ error: 'Channel not found' });
+    }
+
+    await Channel.findByIdAndUpdate(req.params.id, { is_active: false });
+
+    await new AuditLog({
       action: 'channel.deleted',
       actor: 'admin',
-      detail: { channel_id: req.params.id, channel_name: channel?.name }
-    });
-    
+      detail: { channel_id: req.params.id, channel_name: channel.name }
+    }).save();
+
     res.json({ success: true, message: 'Channel deleted' });
   } catch (err) {
     res.status(500).json({ error: 'Internal server error' });
