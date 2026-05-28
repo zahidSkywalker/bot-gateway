@@ -3,14 +3,18 @@ services:
     name: bot-gateway
     runtime: docker
     plan: free
-    region: singapore
+    region: oregon
+    repo: https://github.com/zahidSkywalker/bot-gateway.git
+    branch: main
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
-        value: 3001
+        value: "3001"
       - key: SUPABASE_URL
-        sync: false
+        value: https://iprzxslxipmkivhxupce.supabase.co
       - key: SUPABASE_SERVICE_KEY
         sync: false
       - key: JWT_SECRET
