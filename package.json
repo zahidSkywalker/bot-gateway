@@ -1,0 +1,23 @@
+{
+  "name": "bot-gateway",
+  "version": "1.0.0",
+  "description": "Bot Gateway — Token-based bot connection system with WebSocket & REST API",
+  "main": "server/index.js",
+  "scripts": {
+    "dev": "node server/index.js",
+    "dev:frontend": "cd frontend && npm run dev",
+    "build": "cd frontend && npm run build",
+    "start": "NODE_ENV=production node server/index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.16.0",
+    "@supabase/supabase-js": "^2.39.0",
+    "cors": "^2.8.5",
+    "helmet": "^7.1.0",
+    "express-rate-limit": "^7.1.5",
+    "crypto": "^1.0.1",
+    "uuid": "^9.0.0",
+    "dotenv": "^16.3.1"
+  }
+}
